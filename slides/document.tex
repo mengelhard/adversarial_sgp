@@ -1,0 +1,80 @@
+\documentclass{beamer}
+\usetheme{Madrid}
+\usepackage{default}
+
+\begin{document}
+	
+\begin{frame}{Sparse GP Regression}
+	Suppose we have training data $\{\mathbf{x}_i,y_i\}_{i=1}^n$ where the $\mathbf{x}_i \in \mathbb{R}^d$ are drawn from $p(\mathbf{x})$ and each $y_i$ is a noisy observation of a latent function $f: \mathbb{R}^d \to \mathbb{R}$ applied to $\mathbf{x}_i$. In other words, $y_i = f(\mathbf{x}_i) + \epsilon_i$, where  $\epsilon_i \sim \mathcal{N}(0,\sigma^2)$.\\
+\vspace{1em}
+	 We wish to model these data with a Sparse Gaussian Process with $N$ inducing inputs $\{\mathbf{z}_i\}_{i=1}^N$, where each $\mathbf{z}_i \in \mathbb{R}^d$. We suppose that appropriate hyperparameters $\theta$ (including $\sigma^2$) are known/fixed and therefore omit them where possible in subsequent notation.\\
+	 \vspace{1em}
+	 Letting $X$, $\mathbf{y}$, and $Z$ represent the collections of data and inducing variables, respectively, the posterior $p(Z | \mathbf{y}, X)$ may be expressed as follows:
+	 \begin{equation}
+	 p(Z | \mathbf{y}, X) = \frac{p(\mathbf{y} | Z, X)p(Z)}{p(\mathbf{y} | X)}
+	 \end{equation}
+\end{frame}
+
+\begin{frame}{Sparse GP Regression: Notes}
+	We notice that:
+\begin{itemize}
+	\item $p(\mathbf{y} | X) = C$ is intractable
+	\item $p(\mathbf{y} | Z, X)$ can be approximated by several methods or bounded from below using a variational approach (see next two slides).
+	\item Thus $p(Z|\mathbf{y},X)$ is an unknown, unnormalized distribution.
+\end{itemize}
+\end{frame}
+
+\begin{frame}
+	We approximate $p(Z|\mathbf{y},X)$ as $q_{\psi}(Z) = p(Z|\mathbf{y},X)/C$, where $q_{\psi}(Z)$ is a Gaussian mixture model parameterized by $\psi$. But really this should be for a single pseudo-input, not the collection. We therefore seek to minimize 
+\end{frame}
+	
+\begin{frame}{Approximate SGP Likelihoods: PP and FITC}
+In the projected process (PP) and fully independent training conditional (FITC) formulations, $p(\mathbf{y} | Z, X)$ is an approximation to the full GP likelihood $p(\mathbf{y} | X)$. The PP approximation takes the following form:
+\begin{equation}
+F_{PP} = \mathcal{N}(\mathbf{y} \mid 0, \sigma^2 I+K_{XZ}K^{-1}_{ZZ}K_{ZX})
+\end{equation}
+And the FITC approximation corrects the PP approximation to match the full GP covariance on the diagonal:
+\begin{equation}
+F_{FITC} = \mathcal{N}(y \mid 0, \sigma^2 I+ \text{diag}[K_{XX} - K_{XZ}K^{-1}_{ZZ}K_{ZX}] + K_{XZ}K^{-1}_{ZZ}K_{ZX})
+\end{equation}
+
+\end{frame}
+
+\begin{frame}{Variational Lower Bound on the Full GP Likelihood}
+In the variational formulation due to Titsias (2009), inducing inputs are selected to maximize the following lower bound on the full GP log-likelihood:
+\begin{equation}
+\log F_V = \log [\mathcal{N}(\mathbf{y} | 0, \sigma^2 I+K_{XZ}K^{-1}_{ZZ}K_{ZX})] + \frac{1}{2\sigma^2}Tr[K_{XX} - K_{XZ}K^{-1}_{ZZ}K_{ZX}]
+\end{equation}
+\end{frame}
+
+\begin{frame}{Selecting inducing inputs}
+\begin{itemize}
+	\item Typically a greedy selection procedure is used to sequentially select inducing inputs that provide the greatest increase in (2), (3), or (4).
+	\item Alternatively, a set of $N$ inducing inputs might be initialized to approximate $p(X)$, then jointly tuned to maximize (2), (3), or (4). 
+	\item However, both approaches focus on the likelihood rather than the posterior $p(Z | \mathbf{y}, X)$.
+	\item The key idea: using this posterior (via adversarial learning) will: 
+	\begin{enumerate}
+		\item Ensure that inducing inputs are selected consistent with both the data $X$ and the likelihood, leading to better predictive performance.
+		\item Allow us specify an alternative prior over $Z$ that is more appropriate for a specific, anticipated prediction task.
+	\end{enumerate}
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Adversarial Approach}
+Learning from unnormalized distribution: look to Chunyuan paper or AVB.
+\end{frame}
+
+\begin{frame}{Neural Network Parameterization}
+Mixture model parameterized by NN.
+\end{frame}
+
+\begin{frame}{Baseline Models}
+We are comparing selection of inducing variables by:
+\begin{enumerate}
+	\item Greedy selection
+	\item Models
+\end{enumerate}
+\end{frame}
+
+
+\end{document}
