@@ -1,107 +1,156 @@
 import numpy as np
 import pandas as pd
 import os
+import sys
 
-def load_dataset(dataset,*args,**kwargs):
+
+def load_dataset(dataset, *args, **kwargs):
+
     if dataset == 'kin40k':
-        return load_kin40k(*args,**kwargs)
+        tx, ty, vx, vy, mx, my = load_kin40k(*args, **kwargs)
     elif dataset == 'abalone':
-        return load_abalone(*args,**kwargs)
+        tx, ty, vx, vy, mx, my = load_abalone(*args, **kwargs)
     elif dataset == 'boston':
-        return load_boston(*args,**kwargs)
+        tx, ty, vx, vy, mx, my = load_boston(*args, **kwargs)
     elif dataset == 'sarcos':
-        return load_sarcos(*args,**kwargs)
+        tx, ty, vx, vy, mx, my = load_sarcos(*args, **kwargs)
+    elif dataset == 'mcycle':
+        tx, ty, vx, vy, mx, my = load_mcycle(*args, **kwargs)
     else:
         return None
 
+    tlen = len(tx)
+    assert tlen == len(ty)
+
+    vlen = len(vx)
+    assert vlen == len(vy)
+
+    mlen = len(mx)
+    assert mlen == len(my)
+
+    print('%s loaded: %i train, %i val, %i test' % (dataset, tlen, vlen, mlen))
+    print('Dimension of inputs: %i' % np.shape(tx)[1])
+
+    return tx, ty, vx, vy, mx, my
+
+
 def load_kin40k(val_prc=0.):
 
-    kin40k_dir = '~/sgp/data/kin40k/'
+    kin40k_dir = '../data/kin40k/'
 
-    # Read KIN40K Data
-    train_x = pd.read_csv(kin40k_dir+'kin40k_train_data.asc',sep=' ',
-        header=None,skipinitialspace=True).values
-    train_y = pd.read_csv(kin40k_dir+'kin40k_train_labels.asc',sep=' ',
-        header=None,skipinitialspace=True).values
-    test_x = pd.read_csv(kin40k_dir+'kin40k_test_data.asc',sep=' ',
-        header=None,skipinitialspace=True).values
-    test_y = pd.read_csv(kin40k_dir+'kin40k_test_labels.asc',sep=' ',
-        header=None,skipinitialspace=True).values
-    train_y = np.squeeze(train_y)
-    test_y = np.squeeze(test_y)
+    def read_kin40k(fn):
+        return pd.read_csv(
+            kin40k_dir + fn, sep=' ',
+            header=None, skipinitialspace=True).values
 
-    # Normalize KIN40K Data
+    tx = read_kin40k('kin40k_train_data.asc')
+    ty = np.squeeze(read_kin40k('kin40k_train_labels.asc'))
+    mx = read_kin40k('kin40k_test_data.asc')
+    my = np.squeeze(read_kin40k('kin40k_test_labels.asc'))
 
-    x_var = np.var(train_x,axis=0)
-    x_mean = np.mean(train_x,axis=0)
-    y_var = np.var(train_y)
-    y_mean = np.mean(train_y)
+    tx, ty, vx, vy = split_data(tx, ty, val_prc)
 
-    train_x = (train_x-x_mean)/x_var
-    test_x = (test_x-x_mean)/x_var
-    train_y = (train_y-y_mean)/y_var
-    test_y = (test_y-y_mean)/y_var
+    tx, vx, mx = normalize(tx, vx, mx)
+    ty, vy, my = normalize(ty, vy, my)
 
-    # Create a validation set (20% of training data)
+    return tx, ty, vx, vy, mx, my
 
-    val_indices = np.random.permutation(np.arange(len(train_x)))<int(val_prc*len(train_x))
-    val_x = train_x[val_indices,:]
-    val_y = train_y[val_indices]
-    train_x = train_x[~val_indices,:]
-    train_y = train_y[~val_indices]
 
-    return train_x, train_y, val_x, val_y, test_x, test_y
+def load_mcycle(val_prc=0.):
+
+    df = pd.read_csv('../data/mcycle.csv')
+    tx = df['times'].values[:, np.newaxis]
+    ty = df['accel'].values
+
+    tx, ty, mx, my = split_data(tx, ty, .2)
+    tx, ty, vx, vy = split_data(tx, ty, val_prc)
+
+    tx, vx, mx = normalize(tx, vx, mx)
+    ty, vy, my = normalize(ty, vy, my)
+
+    return tx, ty, vx, vy, mx, my
+
 
 def load_sarcos():
 
     return None
 
+
 def load_abalone(val_prc=0.):
 
-    abalone_dir = '~/sgp/data/abalone/'
+    abalone_dir = '../data/abalone/'
 
-    df = pd.read_csv(os.path.join(abalone_dir,'abalone.data.txt'),header=None,
-        names=['Sex','Length','Diameter','Height','Whole weight','Shucked weight',
-        'Vicera weight','Shell weight','Rings'])
+    df = pd.read_csv(
+        os.path.join(abalone_dir, 'abalone.data.txt'),
+        header=None,
+        names=['Sex', 'Length', 'Diameter', 'Height', 'Whole weight',
+               'Shucked weight', 'Vicera weight', 'Shell weight', 'Rings'])
 
     df['Male'] = (df['Sex'] == 'M').astype(int)
     df['Female'] = (df['Sex'] == 'F').astype(int)
     df['Infant'] = (df['Sex'] == 'I').astype(int)
 
-    df.drop('Sex',1,inplace=True)
+    df.drop('Sex', 1, inplace=True)
 
-    x = df.drop('Rings',1)
+    x = df.drop('Rings', 1)
     y = df['Rings']
 
-    test_x = x[3133:].values
-    train_x = x[:3133].values
+    mx = x[3133:].values
+    tx = x[:3133].values
 
-    test_y = y[3133:].values.astype(float)
-    train_y = y[:3133].values.astype(float)
+    my = y[3133:].values.astype(float)
+    ty = y[:3133].values.astype(float)
+
+    tx, ty, vx, vy = split_data(tx, ty, val_prc)
 
     # Normalize Data
 
-    x_var = np.var(train_x,axis=0)
-    x_mean = np.mean(train_x,axis=0)
-    y_var = np.var(train_y)
-    y_mean = np.mean(train_y)
+    tx, vx, mx = normalize(tx, vx, mx)
+    ty, vy, my = normalize(ty, vy, my)
 
-    train_x = (train_x-x_mean)/x_var
-    test_x = (test_x-x_mean)/x_var
-    train_y = (train_y-y_mean)/y_var
-    test_y = (test_y-y_mean)/y_var
+    return tx, ty, vx, vy, mx, my
 
-    # Create a validation set as a subset of the training set
-
-    val_indices = np.random.permutation(np.arange(len(train_x)))<int(val_prc*len(train_x))
-    val_x = train_x[val_indices,:]
-    val_y = train_y[val_indices]
-    train_x = train_x[~val_indices,:]
-    train_y = train_y[~val_indices]
-
-    return train_x, train_y, val_x, val_y, test_x, test_y
 
 def load_boston():
 
     return None
 
+
+def normalize(*args):
+    """normalize args based on mean and variance of args[0]"""
+
+    vr = np.var(args[0], axis=0)
+    mn = np.mean(args[0], axis=0)
+
+    return ((y - mn) / vr for y in args)
+
+
+def split_data(x, y, split_prc):
+
+    if split_prc > 0.:
+
+        v_indices = np.random.permutation(
+            np.arange(len(x))) < int(split_prc * len(x))
+        vx = x[v_indices, :]
+        vy = y[v_indices]
+        tx = x[~v_indices, :]
+        ty = y[~v_indices]
+
+    else:
+
+        vx = None
+        vy = None
+        tx = x
+        ty = y
+
+    return tx, ty, vx, vy
+
+
+if __name__ == '__main__':
+
+    if(len(sys.argv) == 3):
+        load_dataset(sys.argv[1], val_prc=sys.argv[2])
+    elif(len(sys.argv) == 2):
+        load_dataset(sys.argv[1], val_prc=.2)
+    else:
+        load_dataset('mcycle', val_prc=.2)

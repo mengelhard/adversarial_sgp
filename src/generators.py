@@ -2,12 +2,13 @@
 import numpy as np
 import tensorflow as tf
 
-def generator_simple(initial_model,tau_initial=1e-4,nn_depth=3,reuse=False):
+
+def generator_simple(initial_model, tau_initial=1e-4, nn_depth=3, reuse=False):
     """
     Use random noise 'eps' to sample from mixture model
     """
-    
-    #eps_unif = tf.random_uniform((1,
+
+    # eps_unif = tf.random_uniform((1,
     #    initial_model['n_components']),dtype=tf.float32)
 
     eps_gauss = tf.random_normal((FLAGS.batch_size,
