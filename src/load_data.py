@@ -19,16 +19,15 @@ def load_dataset(dataset, *args, **kwargs):
     else:
         return None
 
-    tlen = len(tx)
-    assert tlen == len(ty)
+    assert len(tx) == len(ty)
+    assert len(vx) == len(vy)
+    assert len(mx) == len(my)
 
-    vlen = len(vx)
-    assert vlen == len(vy)
+    tx, vx, mx = normalize(tx, vx, mx)
+    ty, vy, my = normalize(ty, vy, my)
 
-    mlen = len(mx)
-    assert mlen == len(my)
-
-    print('%s loaded: %i train, %i val, %i test' % (dataset, tlen, vlen, mlen))
+    print('%s loaded: %i train, %i val, %i test' % (
+        dataset, len(tx), len(vx), len(mx)))
     print('Dimension of inputs: %i' % np.shape(tx)[1])
 
     return tx, ty, vx, vy, mx, my
@@ -50,9 +49,6 @@ def load_kin40k(val_prc=0.):
 
     tx, ty, vx, vy = split_data(tx, ty, val_prc)
 
-    tx, vx, mx = normalize(tx, vx, mx)
-    ty, vy, my = normalize(ty, vy, my)
-
     return tx, ty, vx, vy, mx, my
 
 
@@ -64,9 +60,6 @@ def load_mcycle(val_prc=0.):
 
     tx, ty, mx, my = split_data(tx, ty, .2)
     tx, ty, vx, vy = split_data(tx, ty, val_prc)
-
-    tx, vx, mx = normalize(tx, vx, mx)
-    ty, vy, my = normalize(ty, vy, my)
 
     return tx, ty, vx, vy, mx, my
 
@@ -102,11 +95,6 @@ def load_abalone(val_prc=0.):
     ty = y[:3133].values.astype(float)
 
     tx, ty, vx, vy = split_data(tx, ty, val_prc)
-
-    # Normalize Data
-
-    tx, vx, mx = normalize(tx, vx, mx)
-    ty, vy, my = normalize(ty, vy, my)
 
     return tx, ty, vx, vy, mx, my
 

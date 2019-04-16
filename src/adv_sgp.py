@@ -5,14 +5,15 @@ import matplotlib
 import matplotlib.pyplot as plt
 from tensorflow.contrib import slim
 from tensorflow.contrib import distributions
-# from tqdm import tqdm
+from tqdm import tqdm
 from load_data import load_dataset
 from sgp import nlog_sgp_marglik, sgp_pred, scaled_square_dist
+from vis_data import training_summary, vis_gen
 matplotlib.use('Agg')
 
 FLAGS = tf.app.flags.FLAGS
 
-tf.app.flags.DEFINE_string('img_path', '~/sgp/img', """Directory for output figs""")
+tf.app.flags.DEFINE_string('img_path', '../img', """Directory for output figs""")
 tf.app.flags.DEFINE_integer('niter', 10000, """Number of iterations""")
 tf.app.flags.DEFINE_integer('burn_in', 100, """Head-start for discriminator""")
 tf.app.flags.DEFINE_integer('print_freq', 500, """How often to display results""")
@@ -49,9 +50,6 @@ def mixture_pdf(model):
 def lrelu(x, leak=0.2, name="lrelu"):
     return tf.maximum(x, leak * x)
 
-# Gumbel-softmax code taken from:
-# https://github.com/ericjang/gumbel-softmax/blob/master/Categorical%20VAE.ipynb
-
 
 def sample_gumbel(shape, eps=1e-20):
     """Sample from Gumbel(0, 1)"""
@@ -61,9 +59,65 @@ def sample_gumbel(shape, eps=1e-20):
 
 def gumbel_softmax_sample(logits, temperature, num_samples=1):
     """ Draw a sample from the Gumbel-Softmax distribution"""
-    logits = tf.tile(logits, (num_samples, 1))
-    y = logits + sample_gumbel(tf.shape(logits))
-    return tf.nn.softmax(y / temperature)
+    # logits = tf.tile(logits, (num_samples, 1))
+    y = logits[tf.newaxis, :] + sample_gumbel(
+        (num_samples, tf.shape(logits)[0]))
+    return tf.nn.softmax(y / temperature, axis=1)  # check dimension
+
+
+def mix_weights(n_components, gen_type='simple', tau_initial=1e-4,
+                learn_tau=False, depth=3, width=None):
+
+    if width is None:
+        width = n_components
+
+    with tf.variable_scope("mix_weights") as scope:
+
+        if learn_tau:
+            tau = slim.model_variable(
+                'tau', shape=np.shape(tau_initial),
+                initializer=tf.constant_initializer(tau_initial))
+        else:
+            tau = tau_initial
+
+        if gen_type == 'simple':
+            w = slim.model_variable(
+                'weightlogits', shape=(n_components),
+                initializer=tf.zeros_initializer())
+            weights = gumbel_softmax_sample(
+                w, temperature=tau,
+                num_samples=FLAGS.batch_size)
+
+        elif gen_type == 'direct':
+            net = tf.random_normal(
+                (FLAGS.batch_size, width),
+                dtype=tf.float32)
+            for i in range(depth - 1):
+                net = slim.fully_connected(
+                    net, width,
+                    activation_fn=tf.nn.elu, scope='fc_%d' % (i + 1))
+            net = slim.fully_connected(
+                net, n_components,
+                activation_fn=tf.nn.elu, scope='fc_final')
+            weights = slim.softmax(net / tau)
+
+        elif gen_type == 'gumbel':
+            net = tf.random_normal(
+                (width),
+                dtype=tf.float32)
+            for i in range(depth - 1):
+                net = slim.fully_connected(
+                    net, width,
+                    activation_fn=tf.nn.elu, scope='fc_%d' % (i + 1))
+            net = slim.fully_connected(
+                net, n_components,
+                activation_fn=tf.nn.elu, scope='fc_final')
+            w = tf.nn.log_softmax(net, axis=1)
+            weights = gumbel_softmax_sample(
+                w, temperature=tau,
+                num_samples=FLAGS.batch_size)
+
+    return weights
 
 
 def generator(initial_model, type='simple', tau_initial=1e-4,
@@ -82,48 +136,42 @@ def generator(initial_model, type='simple', tau_initial=1e-4,
             'sds', shape=np.shape(initial_model['sds']),
             initializer=tf.constant_initializer(initial_model['sds']))
 
-        if learn_tau:
-            tau = slim.model_variable(
-                'tau', shape=np.shape(tau_initial),
-                initializer=tf.constant_initializer(tau_initial))
-        else:
-            tau = tau_initial
-
-        if type == 'simple':
-            w = slim.model_variable(
-                'weightlogits', shape=(initial_model['n_components']),
-                initializer=tf.zeros_initializer())
-            weights = gumbel_softmax_sample(
-                w[tf.newaxis, :], temperature=tau,
-                num_samples=FLAGS.batch_size)
-
-        elif type == 'direct':
-            net = tf.random_uniform(
-                (FLAGS.batch_size, initial_model['n_components']),
-                dtype=tf.float32)
-            for i in range(nn_depth):
-                net = slim.fully_connected(
-                    net, initial_model['n_components'],
-                    activation_fn=tf.nn.elu, scope='fc_%d' % (i + 1))
-            weights = slim.softmax(net / tau)
-
-        elif type == 'gumbel':
-            net = tf.random_uniform([1, initial_model['n_components']], dtype=tf.float32)
-            for i in range(nn_depth):
-                net = slim.fully_connected(
-                    net, initial_model['n_components'],
-                    activation_fn=tf.nn.elu, scope='fc_%d' % (i + 1))
-            weights = gumbel_softmax_sample(
-                tf.nn.log_softmax(net, axis=1),
-                temperature=tau, num_samples=FLAGS.batch_size)
+        weights = mix_weights(
+            initial_model['n_components'], gen_type='simple', tau_initial=1e-4,
+            learn_tau=False, depth=3, width=None)
 
         eps_gauss = tf.random_normal(
-            (FLAGS.batch_size, initial_model['n_dims']), dtype=tf.float32)
+            (FLAGS.batch_size, initial_model['n_dims']),
+            dtype=tf.float32)
 
-        y = tf.reduce_sum(weights[:, :, tf.newaxis] * means[tf.newaxis, :, :], axis=1)
-        y += tf.reduce_sum(weights[:, :, tf.newaxis] * sds[tf.newaxis, :, :], axis=1) * eps_gauss
+        y = tf.reduce_sum(
+            weights[:, :, tf.newaxis] * means[tf.newaxis, :, :],
+            axis=1)
+        y += tf.reduce_sum(
+            weights[:, :, tf.newaxis] * sds[tf.newaxis, :, :],
+            axis=1) * eps_gauss
 
         return y, weights
+
+# incomplete
+
+
+def gen_lognormal(var_name, num_samples, initial_mean, initial_sd=1.):
+
+    initial_mean = np.squeeze(initial_mean)
+
+    with tf.variable_scope(var_name):
+
+        means = slim.model_variable(
+            'mean', shape=np.shape(initial_mean),
+            initializer=tf.constant_initializer(np.log(initial_mean)))
+        sd = slim.model_variable(
+            'sd', shape=np.shape(initial_sd),
+            initializer=tf.constant_initializer(initial_sd))
+        eps = tf.random_normal(
+            shape=(num_samples, np.shape(initial_mean)[0]),
+            dtype=tf.float32)
+        return tf.exp(eps * sd[tf.newaxis, :] + mean[tf.newaxis, :])
 
 
 def khp_generator(khp_samples, ndims, ard=FLAGS.ard, reuse=False,
@@ -131,6 +179,11 @@ def khp_generator(khp_samples, ndims, ard=FLAGS.ard, reuse=False,
                   initial_noise=FLAGS.noise):
 
     with tf.variable_scope("generator", reuse=reuse) as scope:
+
+        # sls = gen_lognormal('sls', khp_samples, initial_sls)
+        # sfs = gen_lognormal('sfs', khp_samples, initial_sfs)
+        # sls = gen_lognormal('sls', khp_samples, initial_sls)
+        # sls = gen_lognormal('sls', khp_samples, initial_sls)
 
         if ard:
             sls_means = slim.model_variable(
@@ -298,14 +351,14 @@ def sgp_model(tx, ty, vx, vy):
 
     # Make sure pseudo-inputs aren't too close together
     # NEED TO DOUBLE CHECK THIS?
-    ss_dist = scaled_square_dist(z, z, sls)
-    ss_dist = ss_dist + tf.eye(FLAGS.n_z, dtype=tf.float32)[tf.newaxis, :, :]
-    mask = tf.reduce_min(ss_dist, axis=[1, 2]) > FLAGS.min_dist
-    z = tf.boolean_mask(z, mask)
-    z_idx = tf.boolean_mask(z_idx, mask)
-    sls = tf.boolean_mask(sls, mask)
-    sfs = tf.boolean_mask(sfs, mask)
-    noise = tf.boolean_mask(noise, mask)
+    #ss_dist = scaled_square_dist(z, z, sls)
+    #ss_dist = ss_dist + tf.eye(FLAGS.n_z, dtype=tf.float32)[tf.newaxis, :, :]
+    #mask = tf.reduce_min(ss_dist, axis=[1, 2]) > FLAGS.min_dist
+    #z = tf.boolean_mask(z, mask)
+    #z_idx = tf.boolean_mask(z_idx, mask)
+    #sls = tf.boolean_mask(sls, mask)
+    #sfs = tf.boolean_mask(sfs, mask)
+    #noise = tf.boolean_mask(noise, mask)
 
     # get target distribution (SGP marginal likelihood)
     target_distribution = nlog_sgp_marglik(
@@ -330,7 +383,7 @@ def sgp_model(tx, ty, vx, vy):
 
     gloss = tf.reduce_sum(ref_logprob + target_distribution + dz, axis=0)
 
-    return sls, sfs, noise, weights, mse, nmse, dloss, gloss
+    return sls, sfs, noise, weights, mse, nmse, dloss, gloss, z
 
 
 def main(argv):
@@ -342,7 +395,7 @@ def main(argv):
 
     # CHANGE THIS LINE WHEN USING A VALIDATION SET
 
-    sls, sfs, noise, weights, mse, nmse, dloss, gloss = sgp_model(
+    sls, sfs, noise, weights, mse, nmse, dloss, gloss, z = sgp_model(
         train_x, train_y, test_x, test_y)
 
     # prepare for run
@@ -357,38 +410,56 @@ def main(argv):
     if not os.path.exists(outdir):
         os.makedirs(outdir)
 
-    def run_training(sess, niter=FLAGS.niter, ninitial=FLAGS.burn_in, figdir=FLAGS.img_path):
+    def run_training(sess, niter=FLAGS.niter, ninitial=FLAGS.burn_in,
+                     figdir=FLAGS.img_path, cluster=False):
 
         # consider a burn-in period for the discriminator before going to the generator
 
-        # burn_in = tqdm(range(ninitial))
+        if not cluster:
+            burn_in = tqdm(range(ninitial))
 
         for i in range(ninitial):  # burn_in:
 
             dloss_, _ = sess.run([dloss, dtrain_step])
 
-            # burn_in.set_description("dloss=%.3f"  % (dloss_))
+            if not cluster:
+                burn_in.set_description("dloss=%.3f" % (dloss_))
 
         printfreq = FLAGS.print_freq
 
-        # progress = tqdm(range(niter))
-        nms_error = []
-        ms_error = []
+        if not cluster:
+            progress = tqdm(range(niter))
+
+        summary = training_summary(['mse', 'nmse', 'dloss', 'gloss'])
 
         for i in range(niter):  # progress:
 
             dloss_, _ = sess.run([dloss, dtrain_step])
             gloss_, _ = sess.run([gloss, gtrain_step])
 
+            summary.add_point('dloss', [i, dloss_])
+            summary.add_point('gloss', [i, gloss_])
+
             if i % printfreq == 0:
-                nmse_, mse_ = sess.run([nmse, mse])
-                nms_error.append(nmse_)
-                ms_error.append(mse_)
 
-            # progress.set_description("dloss=%.3f,gloss=%.3f,nmse=%.3f"  % (
-            #    dloss_,gloss_,nmse_))
+                nmse_, mse_, z_ = sess.run([nmse, mse, z])
+                summary.add_point('nmse', [i, nmse_])
+                summary.add_point('mse', [i, mse_])
 
-        trainplot(printfreq, nms_error, savepath=FLAGS.img_path)
+                fig, ax = plt.subplots(nrows=1, ncols=1)
+                vis_gen(FLAGS.dataset, ax, z_, train_x, train_y)
+                plt.savefig(os.path.join(FLAGS.img_path, 'z_%i.png' % i))
+
+            if not cluster:
+                progress.set_description("dloss=%.3f,gloss=%.3f,nmse=%.3f" % (
+                    dloss_, gloss_, nmse_))
+
+        fig, ax = plt.subplots(nrows=2, ncols=1)
+        summary.plot_metrics(ax[0], ['nmse', 'mse'])
+        summary.plot_metrics(ax[1], ['gloss'])
+        plt.savefig(os.path.join(FLAGS.img_path, 'training.png'))
+
+        # trainplot(printfreq, nms_error, savepath=FLAGS.img_path)
 
     try:
         s.close()
