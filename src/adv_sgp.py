@@ -153,89 +153,46 @@ def generator(initial_model, type='simple', tau_initial=1e-4,
 
         return y, weights
 
-# incomplete
-
 
 def gen_lognormal(var_name, num_samples, initial_mean, initial_sd=1.):
 
-    initial_mean = np.squeeze(initial_mean)
-
     with tf.variable_scope(var_name):
 
-        means = slim.model_variable(
-            'mean', shape=np.shape(initial_mean),
+        mean = slim.model_variable(
+            'mean', shape=(),
             initializer=tf.constant_initializer(np.log(initial_mean)))
         sd = slim.model_variable(
-            'sd', shape=np.shape(initial_sd),
+            'sd', shape=(),
             initializer=tf.constant_initializer(initial_sd))
-        eps = tf.random_normal(
-            shape=(num_samples, np.shape(initial_mean)[0]),
-            dtype=tf.float32)
-        return tf.exp(eps * sd[tf.newaxis, :] + mean[tf.newaxis, :])
+        eps = tf.random_normal(shape=(num_samples), dtype=tf.float32)
+
+    return tf.exp(eps * sd[tf.newaxis] + mean[tf.newaxis])
 
 
-def khp_generator(khp_samples, ndims, ard=FLAGS.ard, reuse=False,
+def khp_generator(num_samples, num_dims, ard=FLAGS.ard,
                   initial_sls=FLAGS.sls, initial_sfs=FLAGS.sfs,
                   initial_noise=FLAGS.noise):
 
-    with tf.variable_scope("generator", reuse=reuse) as scope:
-
-        # sls = gen_lognormal('sls', khp_samples, initial_sls)
-        # sfs = gen_lognormal('sfs', khp_samples, initial_sfs)
-        # sls = gen_lognormal('sls', khp_samples, initial_sls)
-        # sls = gen_lognormal('sls', khp_samples, initial_sls)
+    with tf.variable_scope('khp_generator', reuse=reuse) as scope:
 
         if ard:
-            sls_means = slim.model_variable(
-                'sls_means', shape=ndims,
-                initializer=tf.constant_initializer(np.log(initial_sls)))
-            sls_sds = slim.model_variable(
-                'sls_sds', shape=ndims,
-                initializer=tf.constant_initializer(1.))
-            sls_eps = tf.random_normal(
-                [khp_samples, ndims],
-                dtype=tf.float32)
-            sls = sls_eps * sls_sds[tf.newaxis, :] + sls_means[tf.newaxis, :]
-            sls = tf.exp(sls)
-
+            sls = tf.stack([gen_lognormal('sls_%i' % x, num_samples, initial_sls)
+                            for x in range(num_dims)], axis=1)
         else:
-            sls_mean = slim.model_variable(
-                'sls_mean', shape=(),
-                initializer=tf.constant_initializer(np.log(initial_sls)))
-            sls_sd = slim.model_variable(
-                'sls_sd', shape=(),
-                initializer=tf.constant_initializer(1.))
-            sls_eps = tf.random_normal([khp_samples], dtype=tf.float32)
-            sls = sls_eps * sls_sd + sls_mean
-            sls = tf.tile(sls[:, tf.newaxis], (1, ndims))
-            sls = tf.exp(sls)
+            sls = gen_lognormal('sls', num_samples, initial_sls)[:, tf.newaxis]
 
-        sfs_mean = slim.model_variable(
-            'sfs_mean', shape=(),
-            initializer=tf.constant_initializer(np.log(initial_sfs)))
-        sfs_sd = slim.model_variable(
-            'sfs_sd', shape=(),
-            initializer=tf.constant_initializer(1.))
-        sfs_eps = tf.random_normal(shape=[khp_samples], dtype=tf.float32)
-        sfs = sfs_eps * sfs_sd + sfs_mean
-        sfs = tf.exp(sfs)
+        sfs = gen_lognormal('sfs', num_samples, initial_sfs)
+        noise = gen_lognormal('noise', num_samples, initial_noise)
 
-        noise_mean = slim.model_variable(
-            'noise_mean', shape=(),
-            initializer=tf.constant_initializer(np.log(initial_noise)))
-        noise_sd = slim.model_variable(
-            'noise_sd', shape=(),
-            initializer=tf.constant_initializer(1.))
-        noise_eps = tf.random_normal(shape=[khp_samples], dtype=tf.float32)
-        noise = noise_eps * noise_sd + noise_mean
-        noise = tf.exp(noise)
-
-        return sls, sfs, noise
+    return sls, sfs, noise
 
 
 def adversary(y, reuse=False):
-    with tf.variable_scope("adversary", reuse=reuse) as scope:
+
+    with tf.variable_scope('adversary', reuse=reuse):
+
         with slim.arg_scope([slim.fully_connected], activation_fn=lrelu):
+
             net = slim.fully_connected(y, 256, scope='fc_0')
 
             for i in range(5):
@@ -250,7 +207,8 @@ def adversary(y, reuse=False):
             net, 1, activation_fn=None, scope='T',
             weights_initializer=tf.constant_initializer(0.))
         T = tf.squeeze(T, [1])
-        return T
+
+    return T
 
 
 def kmeans_mixture_model(data, n_clusters=100, random_state=0):
@@ -290,8 +248,9 @@ def reference(d, num_refs=FLAGS.num_refs):
             probs=[.2] * num_refs),
         components_distribution=distributions.MultivariateNormalDiag(
             loc=np.array([mmref['means'][0]] * num_refs).astype(np.float32),
-            scale_diag=np.array([mmref['sds'][0] * scale for scale in [2**e for e in range(num_refs)]]).astype(
-                np.float32)
+            scale_diag=np.array(
+                [mmref['sds'][0] * scale
+                 for scale in [2**e for e in range(num_refs)]]).astype(np.float32)
         )
     )
 
@@ -351,14 +310,9 @@ def sgp_model(tx, ty, vx, vy):
 
     # Make sure pseudo-inputs aren't too close together
     # NEED TO DOUBLE CHECK THIS?
-    #ss_dist = scaled_square_dist(z, z, sls)
-    #ss_dist = ss_dist + tf.eye(FLAGS.n_z, dtype=tf.float32)[tf.newaxis, :, :]
-    #mask = tf.reduce_min(ss_dist, axis=[1, 2]) > FLAGS.min_dist
-    #z = tf.boolean_mask(z, mask)
-    #z_idx = tf.boolean_mask(z_idx, mask)
-    #sls = tf.boolean_mask(sls, mask)
-    #sfs = tf.boolean_mask(sfs, mask)
-    #noise = tf.boolean_mask(noise, mask)
+
+    z, z_idx, sls, sfs, noise = z_mask(
+        z, z_idx, sls, sfs, noise)
 
     # get target distribution (SGP marginal likelihood)
     target_distribution = nlog_sgp_marglik(
@@ -376,14 +330,29 @@ def sgp_model(tx, ty, vx, vy):
     # Get MSE / normalized MSE
     mse, nmse = get_mse(tf.squeeze(pred), tf.constant(vy, dtype=tf.float32))
 
-    dloss = tf.reduce_mean(
-        tf.nn.sigmoid_cross_entropy_with_logits(logits=dy, labels=tf.ones_like(dy))
-        + tf.nn.sigmoid_cross_entropy_with_logits(logits=dref, labels=tf.zeros_like(dref))
-    )
+    dloss_total = tf.nn.sigmoid_cross_entropy_with_logits(
+        logits=dy, labels=tf.ones_like(dy))
+    dloss_total += tf.nn.sigmoid_cross_entropy_with_logits(
+        logits=dref, labels=tf.zeros_like(dref))
+    dloss = tf.reduce_mean(dloss_total)
 
     gloss = tf.reduce_sum(ref_logprob + target_distribution + dz, axis=0)
 
     return sls, sfs, noise, weights, mse, nmse, dloss, gloss, z
+
+
+def z_mask(z, z_idx, sls, sfs, noise):
+
+    ss_dist = scaled_square_dist(z, z, sls)
+    ss_dist = ss_dist + tf.eye(FLAGS.n_z, dtype=tf.float32)[tf.newaxis, :, :]
+    mask = tf.reduce_min(ss_dist, axis=[1, 2]) > FLAGS.min_dist
+    z = tf.boolean_mask(z, mask)
+    z_idx = tf.boolean_mask(z_idx, mask)
+    sls = tf.boolean_mask(sls, mask)
+    sfs = tf.boolean_mask(sfs, mask)
+    noise = tf.boolean_mask(noise, mask)
+
+    return z, z_idx, sls, sfs, noise
 
 
 def main(argv):
