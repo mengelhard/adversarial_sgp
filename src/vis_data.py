@@ -68,9 +68,6 @@ def vis_gen_sarcos(*args, **kwargs):
 
 def vis_gen_mcycle(ax, z, x, y, *args, **kwargs):
 
-    # print('Shape of z:')
-    # print(np.shape(z))
-
     x = np.squeeze(x)
     miny = np.amin(y) - .02
 

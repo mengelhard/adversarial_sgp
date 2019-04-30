@@ -23,9 +23,6 @@ def load_dataset(dataset, *args, **kwargs):
     assert len(vx) == len(vy)
     assert len(mx) == len(my)
 
-    tx, vx, mx = normalize(tx, vx, mx)
-    ty, vy, my = normalize(ty, vy, my)
-
     print('%s loaded: %i train, %i val, %i test' % (
         dataset, len(tx), len(vx), len(mx)))
     print('Dimension of inputs: %i' % np.shape(tx)[1])
@@ -49,6 +46,9 @@ def load_kin40k(val_prc=0.):
 
     tx, ty, vx, vy = split_data(tx, ty, val_prc)
 
+    # tx, vx, mx = normalize(tx, vx, mx)
+    ty, vy, my = normalize(ty, vy, my)
+
     return tx, ty, vx, vy, mx, my
 
 
@@ -60,6 +60,9 @@ def load_mcycle(val_prc=0.):
 
     tx, ty, mx, my = split_data(tx, ty, .2)
     tx, ty, vx, vy = split_data(tx, ty, val_prc)
+
+    # tx, vx, mx = normalize(tx, vx, mx, center=False)
+    ty, vy, my = normalize(ty, vy, my, center=False)
 
     return tx, ty, vx, vy, mx, my
 
@@ -104,13 +107,16 @@ def load_boston():
     return None
 
 
-def normalize(*args):
+def normalize(*args, center=True):
     """normalize args based on mean and variance of args[0]"""
 
     vr = np.var(args[0], axis=0)
     mn = np.mean(args[0], axis=0)
 
-    return ((y - mn) / vr for y in args)
+    if center:
+        return ((y - mn) / np.sqrt(vr) for y in args)
+    else:
+        return (y / np.sqrt(vr) for y in args)
 
 
 def split_data(x, y, split_prc):

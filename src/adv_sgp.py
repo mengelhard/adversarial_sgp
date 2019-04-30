@@ -120,7 +120,7 @@ def mix_weights(n_components, gen_type='simple', tau_initial=1e-4,
     return weights
 
 
-def generator(initial_model, type='simple', tau_initial=1e-4,
+def generator(initial_model, gen_type='simple', tau_initial=1e-4,
               learn_tau=True, nn_depth=3, reuse=False):
     """
     Use random noise 'eps' to sample from mixture model
@@ -137,7 +137,7 @@ def generator(initial_model, type='simple', tau_initial=1e-4,
             initializer=tf.constant_initializer(initial_model['sds']))
 
         weights = mix_weights(
-            initial_model['n_components'], gen_type='simple', tau_initial=1e-4,
+            initial_model['n_components'], gen_type=gen_type, tau_initial=1e-4,
             learn_tau=False, depth=3, width=None)
 
         eps_gauss = tf.random_normal(
