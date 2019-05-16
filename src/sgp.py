@@ -4,7 +4,8 @@ import tensorflow as tf
 
 class SGPModel:
 
-    def __init__(self, x, y, approx_method='vfe',
+    def __init__(self, x, y,
+                 approx_method='vfe', kernel_type='rbf',
                  jitter_magnitude=1e-5):
 
         assert x.ndim == 2
@@ -19,52 +20,58 @@ class SGPModel:
         self.y = tf.constant(y, dtype=tf.float32)[tf.newaxis, :]
 
         self.approx_method = approx_method
+        self.kernel_type = kernel_type
+        self.jitter_magnitude = jitter_magnitude
+
         self.logtp = tf.constant(
             np.log(2. * np.pi),
             dtype=tf.float32)
 
-        if approx_method == 'vfe':
+    def set_khps(self, sls, sfs, noise):
 
-            self.nlog_marglik = self._vfe_nlog_marglik
-            self._set_terms = self._vfe_set_terms
-
-        elif approx_method == 'fitc':
-
-            self.nlog_marglik = self._fitc_nlog_marglik
-            self._set_terms = self._fitc_set_terms
-
-        self.jitter_magnitude = jitter_magnitude
-
-    def set_kernel(self, sls, sfs, kernel_type='rbf'):
-
-        self.batch_size = tf.shape(sfs)[0]
-        self.sfs = sfs
         self.sls = sls
-
-        if kernel_type == 'rbf':
-            self.kernel = lambda x1, x2: rbf_kernel(x1, x2, sls, sfs)
-
-    def set_noise(self, noise):
-
+        self.sfs = sfs
         self.noise = noise
 
-    def set_inducing_inputs(self, z):
+        if self.kernel_type == 'rbf':
+            self.kernel = lambda x1, x2: rbf_kernel(x1, x2, self.sls, self.sfs)
+
+    def set_inducing_inputs(self, z, filter_dist=None):
 
         self.z = z
         self.num_z = tf.shape(z)[1]
-        self.kzz = self.kernel(z, z)
-        self.kxz = self.kernel(self.x, z)
-        self.kzx = tf.matrix_transpose(self.kxz)
-        self.jitter = self.jitter_magnitude * tf.eye(
-            self.num_z, dtype=tf.float32)[tf.newaxis, :, :]
-        self.kzz_inverse = tf.matrix_inverse(self.kzz + self.jitter)
-        self._qmm_diag = tf.reduce_sum(tf.matmul(
-            self.kxz, self.kzz_inverse) * self.kxz, axis=2)
-        self._set_terms()
+
+        if filter_dist is not None:
+            self._filter_z(filter_dist)
+        else:
+            self.mask = tf.fill(
+                [tf.shape(z)[0]],
+                True)
+
+        self._set_z_terms()
+
+        if self.approx_method == 'vfe':
+
+            self.nlog_marglik = self._vfe_nlog_marglik
+            self._vfe_set_terms()
+
+        elif self.approx_method == 'fitc':
+
+            self.nlog_marglik = self._fitc_nlog_marglik
+            self._fitc_set_terms()
 
     def fullgp_nlog_marglik(self):
 
-        return None
+        kxx = self.kernel(self.x, self.x)
+        inner = kxx + self.noise[:, tf.newaxis, tf.newaxis] * tf.eye(
+            self.num_x)[tf.newaxis, :, :]
+        t1 = .5 * tf.reduce_sum(
+            self.y * right_mult_by_vector(tf.matrix_inverse(inner), self.y),
+            axis=1)
+        t2 = .5 * logdet(inner)
+        t3 = .5 * self.num_x * self.logtp
+
+        return t1 + t2 + t3
 
     def predict(self, t):
 
@@ -81,6 +88,33 @@ class SGPModel:
             self.num_x)[tf.newaxis, :, :]
         ph = right_mult_by_vector(tf.matrix_inverse(inner), self.y)
         return right_mult_by_vector(ktx, ph)
+
+    def _set_z_terms(self):
+
+        self.kzz = self.kernel(self.z, self.z)
+        self.kxz = self.kernel(self.x, self.z)
+        self.kzx = tf.matrix_transpose(self.kxz)
+        self.jitter = self.jitter_magnitude * tf.eye(
+            self.num_z, dtype=tf.float32)[tf.newaxis, :, :]
+        self.kzz_inverse = tf.matrix_inverse(self.kzz + self.jitter)
+        self._qmm_diag = tf.reduce_sum(tf.matmul(
+            self.kxz, self.kzz_inverse) * self.kxz, axis=2)
+
+    def _filter_z(self, filter_dist):
+
+        ss_dist = scaled_square_dist(self.z, self.z, self.sls)
+        ss_dist = ss_dist + tf.eye(
+            self.num_z,
+            dtype=tf.float32)[tf.newaxis, :, :]
+        self.mask = tf.reduce_min(ss_dist, axis=[1, 2]) > filter_dist
+        self.z = tf.boolean_mask(self.z, self.mask)
+        self.sls = tf.boolean_mask(self.sls, self.mask)
+        self.sfs = tf.boolean_mask(self.sfs, self.mask)
+        self.noise = tf.boolean_mask(self.noise, self.mask)
+        self.batch_size = tf.shape(self.sfs)[0]
+
+        if self.kernel_type == 'rbf':
+            self.kernel = lambda x1, x2: rbf_kernel(x1, x2, self.sls, self.sfs)
 
     def _check_points_and_get_kernel(self, t, u):
 

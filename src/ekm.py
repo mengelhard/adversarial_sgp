@@ -1,7 +1,9 @@
 import numpy as np
 
 
-def ekm_unequal_clusters(arr, n_clusters, max_iter=1000):
+def ekm_unequal_clusters(x, n_clusters, max_iter=1000):
+
+    arr = np.copy(x)
 
     np.random.shuffle(arr)
     num_extras = len(arr) % n_clusters
@@ -21,13 +23,15 @@ def ekm_unequal_clusters(arr, n_clusters, max_iter=1000):
     return arr, labels
 
 
-def ekm(arr, n_clusters, max_iter=10000):
+def ekm(x, n_clusters, max_iter=10000):
     '''bare-bones implementation of same-sized k-means
     based on https://elki-project.github.io/tutorial/same-size_k_means
     with the following differences:
     1) assumes all clusters are exactly equal in size (otherwise assertion fails)
     2) searches for best improvement across cluster (rather than just top element)
     3) re-sorts by gain (i.e. priority) after each swap'''
+
+    arr = np.copy(x)
 
     assert len(arr) % n_clusters == 0
 
