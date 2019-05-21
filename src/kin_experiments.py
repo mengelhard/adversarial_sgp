@@ -20,11 +20,13 @@ def main():
 
             for mw_alpha in [1., 10., 100.]:
 
-                learn_asgp(
-                    tx, ty, mx, my,
-                    num_ind_inputs=num_ind_inputs,
-                    gref=gaussian_reference,
-                    mwa=mw_alpha)
+                try:
+
+                    learn_asgp(
+                        tx, ty, mx, my,
+                        num_ind_inputs=num_ind_inputs,
+                        gref=gaussian_reference,
+                        mwa=mw_alpha)
 
 
 def learn_asgp(tx, ty, mx, my,
