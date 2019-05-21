@@ -14,13 +14,25 @@ def main():
 
     tx, ty, vx, vy, mx, my = load_dataset('kin40k', val_prc=.01)
 
-    learn_asgp(tx, ty, mx, my)
+    for num_ind_inputs in [32, 64, 128, 256, 512, 1024]:
+
+        for gaussian_reference in [True, False]:
+
+            for mw_alpha in [1., 10., 100.]:
+
+                learn_asgp(
+                    tx, ty, mx, my,
+                    num_ind_inputs=num_ind_inputs,
+                    gref=gaussian_reference,
+                    mwa=mw_alpha)
 
 
-def learn_asgp(tx, ty, mx, my):
+def learn_asgp(tx, ty, mx, my,
+               num_ind_inputs=None,
+               gaussian_reference=None,
+               mw_alpha=None):
 
-    num_components = 100
-    num_ind_inputs = 100
+    num_components = num_ind_inputs
     num_sgp_samples = 100
     num_steps = 300
 
@@ -31,13 +43,13 @@ def learn_asgp(tx, ty, mx, my):
             component_weights_gen_type='nn-gumbel-softmax',
             weights_nn_depth=4,
             tau_initial=1e-4,
-            gaussian_reference=True)
+            gaussian_reference=gaussian_reference)
 
     sgpm = SGPModel(tx, ty, jitter_magnitude=1e-4)
 
     asgp = ASGP(
         sgp_gen, sgpm,
-        mw_alpha=200.,
+        mw_alpha=mw_alpha,
         n0=1.,
         filter_dist=1e-4,
         g_lr=1e-1)
