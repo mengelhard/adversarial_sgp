@@ -12,26 +12,40 @@ class MixtureModel:
 
     def __init__(self, x, n_clusters, batch_size,
                  initializer='kmeans',
-                 mixture_weights_gen_type='gumbel-softmax',
+                 component_weights_gen_type='gumbel-softmax',
                  tau_initial=None, learn_tau=False,
                  weights_nn_depth=None, weights_nn_width=None,
-                 fix_mixture_components=False, fix_mixture_weights=False):
+                 fix_mixture_components=False, fix_component_weights=False,
+                 gaussian_reference=False):
 
         assert x.ndim == 2
         self.num_x, self.dim_x = np.shape(x)
+        self._xvals = x
         self.x = tf.constant(x, dtype=tf.float32)  # [tf.newaxis, :, :]
 
         self.n_clusters = n_clusters
         self.batch_size = batch_size
 
-        self._mixture_weights_gen_type = mixture_weights_gen_type
+        self._component_weights_gen_type = component_weights_gen_type
         self._tau_initial = tau_initial
         self._learn_tau = learn_tau
         self._weights_nn_depth = weights_nn_depth
         self._weights_nn_width = weights_nn_width
 
+        self._gaussian_reference = gaussian_reference
+
+        assert self._tau_initial is not None
+        assert self._learn_tau is not None
+
+        if self._learn_tau:
+            self.tau = tf.Variable(
+                self._tau_initial, name='tau', dtype=tf.float32)
+        else:
+            self.tau = tf.constant(
+                self._tau_initial, name='tau', dtype=tf.float32)
+
         self._fix_mixture_components = fix_mixture_components
-        self._fix_mixture_weights = fix_mixture_weights
+        self._fix_component_weights = fix_component_weights
 
         if initializer == 'kmeans':
             self.initial_model = kmeans_mixture_model(
@@ -51,7 +65,7 @@ class MixtureModel:
 
     def _build_model(self):
 
-        with tf.variable_scope('mixture_weights'):
+        with tf.variable_scope('component_weights'):
             self._build_weights_generator()
 
         with tf.variable_scope('mixture_components'):
@@ -62,26 +76,44 @@ class MixtureModel:
             dtype=tf.float32)
 
         self.samples = tf.reduce_sum(
-            self.mixture_weights[:, :, tf.newaxis] * self.means[tf.newaxis, :, :],
+            self.component_weights[:, :, tf.newaxis] * self.means[tf.newaxis, :, :],
             axis=1)
         self.samples += eps_gauss * tf.reduce_sum(
-            self.mixture_weights[:, :, tf.newaxis] * self.widths[tf.newaxis, :, :],
+            self.component_weights[:, :, tf.newaxis] * self.widths[tf.newaxis, :, :],
             axis=1)
 
     def _build_weights_generator(self):
 
-        if self._fix_mixture_weights:
-            self.mixture_weights = tf.constant(
+        if self._fix_component_weights:
+
+            self.component_weights = tf.constant(
                 self.initial_model['weights'],
                 dtype=tf.float32)
 
-        elif self._mixture_weights_gen_type == 'gumbel-softmax':
+            self.initial_component_weights = self.component_weights
+
+        elif self._component_weights_gen_type == 'gumbel-softmax':
+
+            self.initial_component_weights = tf.constant(
+                self.initial_model['weights'],
+                dtype=tf.float32)
+
             self._build_weights_gen_gs()
 
-        elif self._mixture_weights_gen_type == 'nn-gumbel-softmax':
+        elif self._component_weights_gen_type == 'nn-gumbel-softmax':
+
+            self.initial_component_weights = tf.constant(
+                self.initial_model['weights'],
+                dtype=tf.float32)
+
             self._build_weights_gen_nngs()
 
-        elif self._mixture_weights_gen_type == 'nn':
+        elif self._component_weights_gen_type == 'nn':
+
+            self.initial_component_weights = tf.constant(
+                self.initial_model['weights'],
+                dtype=tf.float32)
+
             self._build_weights_gen_nn()
 
     def _build_component_distributions(self):
@@ -100,6 +132,16 @@ class MixtureModel:
 
         else:
 
+            self.initial_means = tf.constant(
+                self.initial_model['means'],
+                name='initial_means',
+                dtype=tf.float32)
+
+            self.initial_widths = tf.constant(
+                self.initial_model['widths'],
+                name='initial_widths',
+                dtype=tf.float32)
+
             self.means = tf.Variable(
                 self.initial_model['means'],
                 name='means',
@@ -112,22 +154,14 @@ class MixtureModel:
 
     def _build_weights_gen_gs(self):
 
-        assert self._tau_initial is not None
-        assert self._learn_tau is not None
-
-        if self._learn_tau:
-            self.tau = tf.Variable(
-                self._tau_initial, name='tau', dtype=tf.float32)
-        else:
-            self.tau = tf.constant(
-                self._tau_initial, name='tau', dtype=tf.float32)
-
         weight_logits = tf.Variable(
             np.zeros(self.initial_model['n_components']),
             name='weightlogits',
             dtype=tf.float32)
 
-        self.mixture_weights = gumbel_softmax_sample(
+        self.mix_weights = tf.softmax(weight_logits, axis=1)
+
+        self.component_weights = gumbel_softmax_sample(
             weight_logits,
             temperature=self.tau,
             num_samples=self.batch_size)
@@ -140,7 +174,7 @@ class MixtureModel:
             self._weights_nn_width = self.initial_model['n_components']
 
         net = tf.random_normal(
-            (self._weights_nn_width), dtype=tf.float32)
+            (self.batch_size, self._weights_nn_width), dtype=tf.float32)
 
         for i in range(self._weights_nn_depth - 1):
 
@@ -154,10 +188,11 @@ class MixtureModel:
 
         weight_logits = tf.nn.log_softmax(net, axis=1)
 
-        self.mixture_weights = gumbel_softmax_sample(
+        self.mix_weights = tf.nn.softmax(net, axis=1)
+
+        self.component_weights = gumbel_softmax_sample(
             weight_logits,
-            temperature=self.tau,
-            num_samples=self.batch_size)
+            temperature=self.tau)
 
     def _build_weights_gen_nn(self):  # STOPPED HERE
 
@@ -180,23 +215,61 @@ class MixtureModel:
             net, self.initial_model['n_components'],
             activation_fn=tf.nn.elu, scope='fc_final')
 
-        self.mixture_weights = tf.nn.softmax(net / self.tau, axis=1)
+        self.component_weights = tf.nn.softmax(net / self.tau, axis=1)
+        self.mix_weights = self.component_weights
 
     def _build_reference(self):
 
-        reference_components = [distributions.MultivariateNormalDiag(
-            loc=self.means[i, :],
-            scale_diag=self.widths[i, :]) for i in range(self.n_clusters)]
+        if self._gaussian_reference:
 
-        reference_probs = tf.reduce_mean(self.mixture_weights, axis=0)
+            mdl = kmeans_mixture_model(self._xvals, 1)
 
-        ref = distributions.Mixture(
-            cat=distributions.Categorical(probs=reference_probs),
-            components=reference_components
-        )
+            ref = distributions.MultivariateNormalDiag(
+                loc=mdl['means'][0, :].astype(np.float32),
+                scale_diag=2. * mdl['widths'][0, :].astype(np.float32))
+
+        else:
+
+            reference_components = [distributions.MultivariateNormalDiag(
+                loc=self.means[i, :],
+                scale_diag=self.widths[i, :]) for i in range(self.n_clusters)]
+
+            # reference_probs = .95 * tf.reduce_mean(self.mixture_weights, axis=0)
+            # reference_probs += tf.ones(self.n_clusters) * .05 / self.n_clusters
+
+            reference_probs = tf.reduce_mean(self.mix_weights, axis=0)
+
+            ref = distributions.Mixture(
+                cat=distributions.Categorical(probs=reference_probs),
+                components=reference_components
+            )
 
         self.ref_logprob_gen_samples = ref.log_prob(self.samples)
         self.ref_samples = ref.sample(sample_shape=self.batch_size)
+
+    def nlog_prior(self, n0=1, alpha=None):
+
+        n0 = tf.constant(n0, dtype=tf.float32)
+
+        var_prior = distributions.InverseGamma(
+            concentration=(n0 + 3) / 2,
+            rate=(n0 + 1) * self.initial_widths**2 / 2)
+
+        var_nlog_prob = -1. * var_prior.log_prob(self.widths**2)
+
+        mean_prior = distributions.Normal(
+            loc=self.initial_means,
+            scale=self.widths**2 / n0)
+
+        mean_nlog_prob = -1. * mean_prior.log_prob(self.means)
+
+        mix_prior = distributions.Dirichlet(
+            alpha * np.ones(self.n_clusters).astype(np.float32))
+
+        mix_nlog_prob = -1. * mix_prior.log_prob(
+            tf.reduce_mean(self.mix_weights, axis=0))
+
+        return tf.reduce_sum(var_nlog_prob + mean_nlog_prob) + mix_nlog_prob
 
 
 class SGPGenerator(MixtureModel):
@@ -204,11 +277,12 @@ class SGPGenerator(MixtureModel):
     def __init__(self, x, n_clusters,
                  num_inducing_inputs,
                  num_sgp_samples,
-                 initializer='equal_kmeans',
-                 mixture_weights_gen_type='gumbel-softmax',
+                 initializer='kmeans',
+                 component_weights_gen_type='gumbel-softmax',
                  tau_initial=None, learn_tau=False,
                  weights_nn_depth=None, weights_nn_width=None,
-                 fix_mixture_components=False, fix_mixture_weights=False,
+                 fix_mixture_components=False, fix_component_weights=False,
+                 gaussian_reference=False,
                  initial_sls=0., initial_sfs=0., initial_noise=-5.):
 
         self._num_z = num_inducing_inputs
@@ -221,17 +295,21 @@ class SGPGenerator(MixtureModel):
 
         MixtureModel.__init__(self, x, n_clusters, mixture_model_batch_size,
                               initializer=initializer,
-                              mixture_weights_gen_type=mixture_weights_gen_type,
+                              component_weights_gen_type=component_weights_gen_type,
                               tau_initial=tau_initial, learn_tau=learn_tau,
                               weights_nn_depth=weights_nn_depth,
                               weights_nn_width=weights_nn_width,
                               fix_mixture_components=fix_mixture_components,
-                              fix_mixture_weights=fix_mixture_weights)
+                              fix_component_weights=fix_component_weights,
+                              gaussian_reference=gaussian_reference)
 
         self._build_khp_gen()
-        self.z = tf.reshape(
-            self.samples,
-            [self._num_sgp_samples, self._num_z, self.dim_x])
+
+        # self._build_khp_reference()
+
+    def _build_khp_reference():
+
+        return None
 
     def _build_khp_gen(self):
 
@@ -283,16 +361,19 @@ def kmeans_mixture_model(d, n_clusters, random_state=0):
     lbl = km.labels_
     unique_lbl = np.unique(lbl)
 
-    weights = np.array([np.sum(lbl == i) for i in unique_lbl]) / len(lbl)
+    n_pts = np.array([np.sum(lbl == i) for i in unique_lbl])
+    weights = n_pts / len(lbl)
     centers = np.array([np.mean(d[lbl == i, :], axis=0) for i in unique_lbl])
-    widths = get_cluster_widths(d, lbl, centers)
+    widths, sserrors = get_cluster_widths(d, lbl, centers)
 
     mixture_model = {
         'n_components': n_clusters,
         'n_dims': np.shape(d)[1],
+        'n_pts': n_pts,
         'weights': weights,
         'means': centers,
-        'widths': widths}
+        'widths': widths,
+        'sserrors': sserrors}
 
     return mixture_model
 
@@ -304,16 +385,19 @@ def equal_kmeans_mixture_model(d, n_clusters, random_state=0):
     d, lbl = ekm_unequal_clusters(d, n_clusters)
     unique_lbl = np.unique(lbl)
 
-    weights = np.array([np.sum(lbl == i) for i in unique_lbl]) / len(lbl)
+    n_pts = np.array([np.sum(lbl == i) for i in unique_lbl])
+    weights = n_pts / len(lbl)
     centers = np.array([np.mean(d[lbl == i, :], axis=0) for i in unique_lbl])
-    widths = get_cluster_widths(d, lbl, centers)
+    widths, sserrors = get_cluster_widths(d, lbl, centers)
 
     mixture_model = {
         'n_components': n_clusters,
         'n_dims': np.shape(d)[1],
+        'n_pts': n_pts,
         'weights': weights,
         'means': centers,
-        'widths': widths}
+        'widths': widths,
+        'sserrors': sserrors}
 
     return mixture_model
 
@@ -338,13 +422,18 @@ def subset_of_data_mixture_model(d, n_clusters, random_state=0):
 def get_cluster_widths(points, labels, centers):
 
     widths = []
+    sserrors = []
 
     for label, center in zip(np.unique(labels), centers):
 
         pts = points[labels == label, :]
-        widths.append(np.sqrt(np.mean((pts - center)**2, axis=0)))
+        sse = np.sum((pts - center)**2, axis=0)
+        width = np.sqrt(sse / len(pts))
 
-    return np.array(widths)
+        sserrors.append(sse)
+        widths.append(width)
+
+    return np.array(widths), np.array(sserrors)
 
 
 def pw_dist(x, y):
@@ -358,11 +447,14 @@ def sample_gumbel(shape, eps=1e-20):
     return -tf.log(-tf.log(U + eps) + eps)
 
 
-def gumbel_softmax_sample(logits, temperature, num_samples=1):
+def gumbel_softmax_sample(logits, temperature, num_samples=None):
     """ Draw a sample from the Gumbel-Softmax distribution"""
     # logits = tf.tile(logits, (num_samples, 1))
-    y = logits[tf.newaxis, :] + sample_gumbel(
-        (num_samples, tf.shape(logits)[0]))
+    if num_samples is None:
+        y = logits + sample_gumbel(tf.shape(logits))
+    else:
+        y = logits[tf.newaxis, :] + sample_gumbel(
+            (num_samples, tf.shape(logits)[0]))
     return tf.nn.softmax(y / temperature, axis=1)  # check dimension
 
 

@@ -6,33 +6,145 @@ from tensorflow.contrib import distributions
 import matplotlib.pyplot as plt
 from load_data import load_dataset
 from sgp import SGPModel
-from MixtureModel import MixtureModel, kmeans_mixture_model
+from MixtureModel import MixtureModel, SGPGenerator, kmeans_mixture_model
+from learn_with_lr import ASGP
 
 
 def main():
 
     tx, ty, vx, vy, mx, my = load_dataset('mcycle', val_prc=.1)
 
-    noise_, sfs_, sls_ = get_khps(tx, ty)
+    # noise_, sfs_, sls_ = get_khps(tx, ty)
 
-    print('(from Full GP -- Noise: ', noise_, ', SFS: ', sfs_, ' SLS: ', sls_)
+    # print('(from Full GP -- Noise: ', noise_, ', SFS: ', sfs_, ' SLS: ', sls_)
 
-    z_ = np.linspace(0, 60, 100)
+    # z_ = np.linspace(-10, 70, 100)
 
-    check_approx_marglik(
-        tx, ty, noise_, sfs_, sls_, z_,
-        savefile='../img/mcycle_experiments/marglik.png')
+    # check_approx_marglik(
+    #     tx, ty, noise_, sfs_, sls_, z_,
+    #     savefile='../img/mcycle_experiments/marglik.png')
 
-    sample_from_initial_mm(
-        tx, ty,
-        savefile='../img/mcycle_experiments/initial_mm_samples.png')
+    # sample_from_initial_mm(
+    #     tx, ty,
+    #     savefile='../img/mcycle_experiments/initial_mm_samples.png')
 
-    learn_from_u(tx, ty, noise_, sfs_, sls_)
+    # learn_from_u(tx, ty, noise_, sfs_, sls_)
+
+    learn_asgp(tx, ty)
+
+
+def learn_asgp(tx, ty):
+
+    num_components = 4
+    num_ind_inputs = 4
+    num_sgp_samples = 100
+    num_steps = 300
+
+    with tf.variable_scope('generator'):
+
+        sgp_gen = SGPGenerator(
+            tx, num_components, num_ind_inputs, num_sgp_samples,
+            component_weights_gen_type='nn-gumbel-softmax',
+            weights_nn_depth=5,
+            tau_initial=1e-4,
+            gaussian_reference=True)
+
+    sgpm = SGPModel(tx, ty, jitter_magnitude=1e-4)
+
+    asgp = ASGP(
+        sgp_gen, sgpm,
+        mw_alpha=200.,
+        n0=1.,
+        filter_dist=1e-4,
+        g_lr=1e-1)
+
+    mask = sgpm.mask
+
+    x_grid = np.linspace(0, 60, 200)
+    predictions = sgpm.predict(x_grid[:, np.newaxis])
+
+    with tf.Session() as s:
+
+        s.run(tf.global_variables_initializer())
+
+        initial_z_, ref_samples_ = s.run([sgp_gen.samples, sgp_gen.ref_samples])
+
+        for i in range(100):
+
+            _ = s.run(asgp.dtrain_step)
+
+        progress = tqdm(range(num_steps))
+
+        plot_mcycle_initial(tx, ty, ref_samples_, initial_z_)
+
+        for i in progress:
+
+            _ = s.run(asgp.dtrain_step)
+            _, gloss_, mask_ = s.run(
+                [asgp.gtrain_step, asgp.gloss, sgpm.mask])
+
+            prc_used = np.sum(mask_) / len(mask_)
+
+            progress.set_description('gloss=%.3f, prc_used=%.3f' % (
+                gloss_, prc_used))
+
+        z_, ref_samples_, predictions_ = s.run(
+            [sgp_gen.samples, sgp_gen.ref_samples, predictions])
+
+    plot_mcycle_final(tx, ty, ref_samples_, z_, x_grid, predictions_)
+
+
+def plot_mcycle_initial(tx, ty, ref_samples, z):
+
+    fig, ax = plt.subplots(ncols=1, nrows=3, sharex=True, figsize=(6, 6))
+
+    ax[0].scatter(tx, ty)
+    ax[0].set_ylabel('data (y)')
+    ax[0].set_xlabel('data (x)')
+    ax[1].hist(ref_samples, bins=np.linspace(0, 60, 30))
+    ax[1].set_ylabel('num samples')
+    ax[1].set_xlabel('reference samples')
+    ax[2].hist(z, bins=np.linspace(0, 60, 30))
+    ax[2].set_ylabel('num samples')
+    ax[2].set_xlabel('initial z values')
+    ax[2].set_xlim([0, 60])
+
+    plt.tight_layout()
+    plt.savefig('../img/mcycle_experiments/initial_samples')
+
+
+def plot_mcycle_final(tx, ty, ref_samples, z, pred_x, pred_y):
+
+    fig, ax = plt.subplots(ncols=1, nrows=4, sharex=True, figsize=(6, 8))
+
+    ax[0].scatter(tx, ty)
+    ax[0].set_ylabel('data (y)')
+    ax[0].set_xlabel('data (x)')
+    ax[1].hist(ref_samples, bins=np.linspace(0, 60, 30))
+    ax[1].set_ylabel('number of samples')
+    ax[1].set_xlabel('reference samples')
+    ax[2].hist(z, bins=np.linspace(0, 60, 30))
+    ax[2].set_ylabel('number of samples')
+    ax[2].set_xlabel('final z values')
+
+    mn = np.median(pred_y, axis=0)
+    hi = np.percentile(pred_y, 75, axis=0)
+    lo = np.percentile(pred_y, 25, axis=0)
+
+    ax[3].scatter(tx, ty)
+    ax[3].plot(pred_x, mn, color='m', alpha=.5)
+    ax[3].fill_between(pred_x, lo, hi, color='m', alpha=.2)
+    ax[3].set_ylabel('predict')
+    ax[3].set_xlim([0, 60])
+
+    plt.tight_layout()
+    plt.savefig('../img/mcycle_experiments/final_samples.png')
 
 
 def learn_from_u(tx, ty, noise_, sfs_, sls_,
                  num_components=4, batch_size=200,
-                 num_ind_inputs=2, num_steps=1000):
+                 num_ind_inputs=4, num_steps=1000,
+                 tol_num_iter_no_improve=30):
 
     with tf.variable_scope('generator'):
 
@@ -60,24 +172,11 @@ def learn_from_u(tx, ty, noise_, sfs_, sls_,
 
     sgpm = SGPModel(tx, ty, jitter_magnitude=1e-5)
     sgpm.set_khps(sls, sfs, noise)
-    sgpm.set_inducing_inputs(z_reshaped, filter_dist=1e-8)
+    sgpm.set_inducing_inputs(z_reshaped, filter_dist=1e-3)
     mask = sgpm.mask
 
     nlog_marglik = sgpm.nlog_marglik()
-
-    # reference_components = [distributions.MultivariateNormalDiag(
-    #     loc=means[i, :],
-    #     scale_diag=widths[i, :]) for i in range(num_components)]
-
-    # reference_probs = tf.reduce_mean(mixture_weights, axis=0)
-
-    # ref = distributions.Mixture(
-    #     cat=distributions.Categorical(probs=reference_probs),
-    #     components=reference_components
-    # )
-
-    # ref_logprob_gen_samples = ref.log_prob(z)
-    # ref_samples = ref.sample(sample_shape=batch_size)
+    nlog_prior = mm.nlog_prior(n0=1, alpha=5.)
 
     ref_logprob_gen_samples = mm.ref_logprob_gen_samples
     ref_samples = mm.ref_samples
@@ -112,16 +211,21 @@ def learn_from_u(tx, ty, noise_, sfs_, sls_,
             mask),
         axis=1)
 
-    gloss = tf.reduce_mean(rlgs + nlog_marglik - dgs, axis=0)
+    gloss = tf.reduce_mean(rlgs + nlog_marglik - dgs, axis=0) + nlog_prior
+    # gloss = tf.reduce_mean(nlog_marglik, axis=0) + nlog_prior
 
     dvars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'adversary')
     gvars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, 'generator')
 
     dtrain_step = tf.train.AdamOptimizer(1e-4).minimize(dloss, var_list=dvars)
-    gtrain_step = tf.train.AdamOptimizer(1e-2).minimize(gloss, var_list=gvars)
+    gtrain_step = tf.train.AdamOptimizer(1e-1).minimize(gloss, var_list=gvars)
 
     x_grid = np.linspace(0, 60, 200)
     predictions = sgpm.predict(x_grid[:, np.newaxis])
+
+    best_gloss = np.inf
+    all_gloss = []
+    num_iter_no_improve = 0
 
     with tf.Session() as s:
 
@@ -138,7 +242,7 @@ def learn_from_u(tx, ty, noise_, sfs_, sls_,
 
         progress = tqdm(range(num_steps))
 
-        fig, ax = plt.subplots(ncols=1, nrows=3, sharex=True)
+        fig, ax = plt.subplots(ncols=1, nrows=3, sharex=True, figsize=(6, 6))
 
         ax[0].scatter(tx, ty)
         ax[0].set_ylabel('data (y)')
@@ -150,20 +254,38 @@ def learn_from_u(tx, ty, noise_, sfs_, sls_,
         ax[2].set_ylabel('num samples')
         ax[2].set_xlabel('initial z values')
 
+        plt.tight_layout()
         plt.savefig('../img/mcycle_experiments/initial_samples')
 
         for i in progress:
 
             _ = s.run(dtrain_step)
-            _, gloss_, z_, ref_samples_ = s.run([gtrain_step, gloss, z, ref_samples])
+            _, gloss_, z_, ref_samples_, mask_ = s.run(
+                [gtrain_step, gloss, z, ref_samples, mask])
 
-            # print('Z', z_, 'ref samples', ref_samples_)
+            prc_used = np.sum(mask_) / len(mask_)
 
-            progress.set_description('gloss=%.3f' % gloss_)
+            progress.set_description('gloss=%.3f, prc_used=%.3f' % (
+                gloss_, prc_used))
+
+            all_gloss.append(gloss_)
+            smoothed_gloss = np.mean(all_gloss[-10:])
+
+            if smoothed_gloss < best_gloss:
+                best_gloss = smoothed_gloss
+                num_iter_no_improve = 0
+
+            else:
+                num_iter_no_improve += 1
+
+            if tol_num_iter_no_improve is not None:
+                if num_iter_no_improve > tol_num_iter_no_improve:
+                    progress.close()
+                    break
 
         z_, ref_samples_, predictions_ = s.run([z, ref_samples, predictions])
 
-    fig, ax = plt.subplots(ncols=1, nrows=3, sharex=True)
+    fig, ax = plt.subplots(ncols=1, nrows=4, sharex=True, figsize=(6, 8))
 
     ax[0].scatter(tx, ty)
     ax[0].set_ylabel('data (y)')
@@ -174,17 +296,12 @@ def learn_from_u(tx, ty, noise_, sfs_, sls_,
     ax[2].hist(z_, bins=20)
     ax[2].set_ylabel('number of samples')
     ax[2].set_xlabel('final z values')
+    ax[3].scatter(tx, ty)
+    ax[3].plot(x_grid, np.mean(predictions_, axis=0))
+    ax[3].set_ylabel('predict')
 
+    plt.tight_layout()
     plt.savefig('../img/mcycle_experiments/final_samples.png')
-
-    fig, ax = plt.subplots(ncols=1, nrows=1)
-
-    ax.scatter(tx, ty)
-    ax.plot(x_grid, predictions_[0, :])
-    ax.plot(x_grid, predictions_[1, :])
-    ax.plot(x_grid, predictions_[2, :])
-
-    plt.savefig('../img/mcycle_experiments/predictions.png')
 
 
 def sample_from_initial_mm(tx, ty, savefile=None):
