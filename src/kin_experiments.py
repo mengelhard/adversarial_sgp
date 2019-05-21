@@ -25,8 +25,11 @@ def main():
                     learn_asgp(
                         tx, ty, mx, my,
                         num_ind_inputs=num_ind_inputs,
-                        gref=gaussian_reference,
+                        gaussian_reference=gaussian_reference,
                         mwa=mw_alpha)
+
+                except Exception as e:
+                    print(e)
 
 
 def learn_asgp(tx, ty, mx, my,
