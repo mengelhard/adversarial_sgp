@@ -12,34 +12,40 @@ from learn_with_lr import ASGP
 
 def main():
 
-    tx, ty, vx, vy, mx, my = load_dataset('kin40k', val_prc=.01)
+    tx, ty, vx, vy, mx, my = load_dataset('kin40k', val_prc=.2)
 
-    for num_ind_inputs in [32, 64, 128, 256, 512, 1024]:
+    for num_ind_inputs in [32]:  # , 64, 128, 256, 512, 1024]:
 
         for gaussian_reference in [True, False]:
 
-            for mw_alpha in [1., 10., 100.]:
+            for mw_alpha in [1.]:  # , 10., 100.]:
 
-                try:
+                print('Starting New Run:')
 
-                    learn_asgp(
-                        tx, ty, mx, my,
-                        num_ind_inputs=num_ind_inputs,
-                        gaussian_reference=gaussian_reference,
-                        mwa=mw_alpha)
+                # try:
 
-                except Exception as e:
-                    print(e)
+                gloss, val_nmse, avg_test_nmse_, min_test_nmse_ = learn_asgp(
+                    tx, ty, vx, vy, mx, my,
+                    num_ind_inputs=num_ind_inputs,
+                    gaussian_reference=gaussian_reference,
+                    mw_alpha=mw_alpha)
+
+                # except Exception as e:
+                #    print(e)
+
+                tf.reset_default_graph()
 
 
-def learn_asgp(tx, ty, mx, my,
+def learn_asgp(tx, ty, vx, vy, mx, my,
                num_ind_inputs=None,
                gaussian_reference=None,
                mw_alpha=None):
 
     num_components = num_ind_inputs
     num_sgp_samples = 100
-    num_steps = 300
+    max_steps = 10000
+    max_no_improve = 10
+    check_val_freq = 20
 
     with tf.variable_scope('generator'):
 
@@ -61,9 +67,16 @@ def learn_asgp(tx, ty, mx, my,
 
     mask = sgpm.mask
 
-    predictions = sgpm.predict(mx)
-    avg_prediction = tf.reduce_mean(predictions, axis=0)
-    nmse = normalized_mean_square_error(avg_prediction, my)
+    test_predictions = sgpm.predict(mx)
+    val_predictions = sgpm.predict(vx)
+    avg_test_prediction = tf.reduce_mean(test_predictions, axis=0)[tf.newaxis, :]
+    avg_val_prediction = tf.reduce_mean(val_predictions, axis=0)[tf.newaxis, :]
+    avg_test_nmse = normalized_mean_square_error(avg_test_prediction, my)
+    avg_val_nmse = normalized_mean_square_error(avg_val_prediction, vy)
+    test_nmse = normalized_mean_square_error(test_predictions, my)
+    val_nmse = normalized_mean_square_error(val_predictions, vy)
+    min_test_nmse = tf.reduce_min(test_nmse, axis=0)
+    min_val_nmse = tf.reduce_min(val_nmse, axis=0)
 
     with tf.Session() as s:
 
@@ -72,14 +85,18 @@ def learn_asgp(tx, ty, mx, my,
         initial_z_, ref_samples_ = s.run([sgp_gen.samples, sgp_gen.ref_samples])
 
         for i in range(100):
-
             _ = s.run(asgp.dtrain_step)
 
-        progress = tqdm(range(num_steps))
+        idx = 0
+        no_improve = 0
+        best_nmse = 100.
 
-        # plot_kin_initial(tx, ty, ref_samples_, initial_z_)
+        gloss_all = []
+        nmse_all = []
 
-        for i in progress:
+        while (no_improve < max_no_improve) and (idx < max_steps):
+
+            idx += 1
 
             _ = s.run(asgp.dtrain_step)
             _, gloss_, mask_ = s.run(
@@ -87,15 +104,21 @@ def learn_asgp(tx, ty, mx, my,
 
             prc_used = np.sum(mask_) / len(mask_)
 
-            progress.set_description('gloss=%.3f, prc_used=%.3f' % (
-                gloss_, prc_used))
+            if idx % check_val_freq == 0:
+                min_val_nmse_ = s.run(min_val_nmse)
+                nmse_all.append(min_val_nmse_)
+                print('best val nmse: %.3f' % min_val_nmse_)
+                if best_nmse < min_val_nmse_:
+                    no_improve += 1
+                else:
+                    best_nmse = min_val_nmse_
+                    no_improve = 0
 
-        z_, ref_samples_, predictions_, nmse_ = s.run(
-            [sgp_gen.samples, sgp_gen.ref_samples, predictions, nmse])
+        avg_test_nmse_, min_test_nmse_ = s.run([avg_test_nmse, min_test_nmse])
+        print('avg test nmse: %.3f' % avg_test_nmse_)
+        print('best test nmse: %.3f' % min_test_nmse_)
 
-    print('Normalized MSE: ', nmse_)
-
-    # plot_kin_final(tx, ty, ref_samples_, z_, x_grid, predictions_)
+    return gloss_all, nmse_all, avg_test_nmse_, min_test_nmse_
 
 
 def plot_kin_initial(tx, ty, ref_samples, z):
@@ -108,7 +131,7 @@ def plot_kin_final(tx, ty, ref_samples, z):
     return None
 
 
-def normalized_mean_square_error(pred, real, return_mse=True):
+def normalized_mean_square_error(pred, real, return_mse=False):
     mse = mean_square_error(pred, real)
     if return_mse:
         return mse / mean_square_error(0, real), mse
@@ -117,9 +140,9 @@ def normalized_mean_square_error(pred, real, return_mse=True):
 
 
 def mean_square_error(pred, real):
-    real = tf.cast(real, dtype=tf.float32)
+    real = tf.cast(real, dtype=tf.float32)[tf.newaxis, :]
     se = (pred - real)**2
-    return tf.reduce_mean(se, axis=0)
+    return tf.reduce_mean(se, axis=1)
 
 
 if __name__ == '__main__':
