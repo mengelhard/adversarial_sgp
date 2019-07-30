@@ -21,6 +21,9 @@ def kin40k_experiments():
                 for mw_alpha in [1., 10., 100.]:
 
                     print('Starting New Run:')
+                    print(
+                        'num_ind_inputs:', num_ind_inputs, ', g_ref:', gaussian_reference,
+                        ', g_lr:', g_lr, ', mw_alpha:', mw_alpha)
 
                     try:
 
