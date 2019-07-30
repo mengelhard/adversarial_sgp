@@ -4,7 +4,7 @@ import tensorflow as tf
 import tensorflow.contrib.layers as layers
 from tensorflow.contrib import distributions
 from load_data import load_dataset
-from sgp import SGPModel
+from SGPModel import SGPModel
 from tqdm import tqdm
 
 
@@ -12,7 +12,7 @@ class MixtureModel:
 
     def __init__(self, x, n_clusters, batch_size,
                  initializer='kmeans',
-                 component_weights_gen_type='gumbel-softmax',
+                 component_weights_gen_type='nn-gumbel-softmax',
                  tau_initial=None, learn_tau=False,
                  weights_nn_depth=None, weights_nn_width=None,
                  fix_mixture_components=False, fix_component_weights=False,
