@@ -91,7 +91,7 @@ def learn_asgp(tx, ty, vx, vy, mx, my,
                num_sgp_samples=100,
                max_steps=5000,
                check_val_freq=10,
-               max_no_improve=5,
+               max_no_improve=20,
                gaussian_reference=False,
                weights_nn_depth=2,
                g_lr=1e-1,
@@ -151,6 +151,8 @@ def learn_asgp(tx, ty, vx, vy, mx, my,
             _ = s.run(asgp.dtrain_step)
             _, gloss_, mask_ = s.run(
                 [asgp.gtrain_step, asgp.gloss, sgpm.mask])
+
+            gloss_all.append(gloss_)
 
             prc_used = np.sum(mask_) / len(mask_)
 
